@@ -48,16 +48,43 @@ let sock = null;
 let isReconnecting = false;
 let isSocketReady = false;
 
+// Recursively unwrap ephemeral, viewOnce, or forwarded container messages
+function unwrapMessage(m) {
+    if (!m) return null;
+    let current = m;
+    while (
+        current?.ephemeralMessage?.message ||
+        current?.viewOnceMessage?.message ||
+        current?.viewOnceMessageV2?.message ||
+        current?.viewOnceMessageV2Extension?.message ||
+        current?.documentWithCaptionMessage?.message
+    ) {
+        current = (
+            current.ephemeralMessage?.message ||
+            current.viewOnceMessage?.message ||
+            current.viewOnceMessageV2?.message ||
+            current.viewOnceMessageV2Extension?.message ||
+            current.documentWithCaptionMessage?.message
+        );
+    }
+    return current;
+}
+
 // Extract text from WhatsApp message object
 function extractMessageText(msg) {
     if (!msg.message) return null;
-    const m = msg.message;
+    const m = unwrapMessage(msg.message);
+    if (!m) return null;
+
     return (
         m.conversation ||
         m.extendedTextMessage?.text ||
         m.imageMessage?.caption ||
         m.videoMessage?.caption ||
-        m.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+        m.documentMessage?.caption ||
+        m.buttonsResponseMessage?.selectedButtonId ||
+        m.templateButtonReplyMessage?.selectedId ||
+        m.listResponseMessage?.singleSelectReply?.selectedRowId ||
         null
     );
 }
@@ -65,18 +92,59 @@ function extractMessageText(msg) {
 // Extract contextInfo for mention and quote detection
 function getContextInfo(msg) {
     if (!msg.message) return {};
-    const m = msg.message;
+    const m = unwrapMessage(msg.message);
+    if (!m) return {};
+
     return (
         m.extendedTextMessage?.contextInfo ||
         m.imageMessage?.contextInfo ||
         m.videoMessage?.contextInfo ||
         m.documentMessage?.contextInfo ||
-        m.documentWithCaptionMessage?.message?.documentMessage?.contextInfo ||
         m.buttonsResponseMessage?.contextInfo ||
         m.templateButtonReplyMessage?.contextInfo ||
         m.listResponseMessage?.contextInfo ||
         {}
     );
+}
+
+// Check if bot was tagged (@) or quote/swipe-replied in a group
+function checkGroupTrigger(msg, rawText, botUser) {
+    if (!botUser) return { triggered: false };
+
+    // Bot Phone ID & LID
+    const botPhoneDigits = botUser.id ? botUser.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+    const botLidDigits = botUser.lid ? botUser.lid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+
+    const contextInfo = getContextInfo(msg);
+    const mentionedJids = contextInfo.mentionedJid || [];
+
+    // 1. Check mentioned JIDs in contextInfo
+    for (const jid of mentionedJids) {
+        const cleanJid = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        if ((botPhoneDigits && cleanJid === botPhoneDigits) || (botLidDigits && cleanJid === botLidDigits)) {
+            return { triggered: true, reason: 'MENTION_TAG' };
+        }
+    }
+
+    // 2. Check text for @botPhone or @botLid
+    if (rawText) {
+        if (botPhoneDigits && rawText.includes(`@${botPhoneDigits}`)) {
+            return { triggered: true, reason: 'MENTION_TEXT_PHONE' };
+        }
+        if (botLidDigits && rawText.includes(`@${botLidDigits}`)) {
+            return { triggered: true, reason: 'MENTION_TEXT_LID' };
+        }
+    }
+
+    // 3. Check Swipe-Reply / Quote of a message sent by the bot
+    if (contextInfo.quotedMessage && contextInfo.participant) {
+        const quotedSender = contextInfo.participant.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        if ((botPhoneDigits && quotedSender === botPhoneDigits) || (botLidDigits && quotedSender === botLidDigits)) {
+            return { triggered: true, reason: 'QUOTE_SWIPE_REPLY' };
+        }
+    }
+
+    return { triggered: false };
 }
 
 async function connectToWhatsApp(forcedPhone = null) {
@@ -122,7 +190,6 @@ async function connectToWhatsApp(forcedPhone = null) {
                     console.error('Failed to generate QR data URL:', qrErr);
                 }
 
-                // If user didn't explicitly request pairing code, show QR in terminal
                 if (!botState.pairingCode) {
                     console.log('\n=============================================');
                     console.log('       SCAN QR CODE OR USE PAIRING CODE      ');
@@ -175,13 +242,15 @@ async function connectToWhatsApp(forcedPhone = null) {
                 botState.user = sock.user;
 
                 const userPhone = sock.user?.id ? sock.user.id.split(':')[0] : 'Unknown';
+                const userLid = sock.user?.lid ? sock.user.lid.split(':')[0] : 'Unknown';
                 const userName = sock.user?.name || sock.user?.notify || 'WhatsApp User';
 
                 console.log('\n=============================================');
-                console.log(` ✅ WHATSAPP CONNECTED: +${userPhone} (${userName})`);
+                console.log(` ✅ WHATSAPP CONNECTED: +${userPhone} (LID: ${userLid})`);
+                console.log(` Name: ${userName}`);
                 console.log('=============================================\n');
 
-                addLog('info', `WhatsApp connected successfully as: ${userName} (+${userPhone})`);
+                addLog('info', `WhatsApp connected successfully as: ${userName} (+${userPhone}, LID: ${userLid})`);
             }
         });
 
@@ -213,46 +282,43 @@ async function connectToWhatsApp(forcedPhone = null) {
                     }
 
                     const isGroup = remoteJid.endsWith('@g.us');
-                    const contextInfo = getContextInfo(msg);
-
-                    // Extract bot's own phone / ID
-                    const botPhone = sock.user?.id ? sock.user.id.split(':')[0].replace(/[^0-9]/g, '') : null;
+                    const botUser = sock.user || sock.authState?.creds?.me;
 
                     let shouldReply = false;
                     let chatTypeLabel = 'PRIVATE';
+                    let triggerReason = 'DIRECT_MESSAGE';
 
                     if (!isGroup) {
                         // In Private Chats: Always reply!
                         shouldReply = true;
                         chatTypeLabel = 'PRIVATE';
+                        triggerReason = 'PRIVATE_CHAT';
                     } else {
                         // In Group Chats: Check for @mention or quote-reply to bot
-                        const mentionedJid = contextInfo.mentionedJid || [];
-                        const isMentioned = Boolean(
-                            botPhone && (
-                                mentionedJid.some(j => j.includes(botPhone)) ||
-                                rawText.includes(`@${botPhone}`)
-                            )
-                        );
-
-                        const quotedParticipant = contextInfo.participant ? contextInfo.participant.replace(/[^0-9]/g, '') : null;
-                        const isQuotedBot = Boolean(botPhone && quotedParticipant && quotedParticipant === botPhone);
-
-                        if (isMentioned || isQuotedBot) {
+                        const check = checkGroupTrigger(msg, rawText, botUser);
+                        if (check.triggered) {
                             shouldReply = true;
-                            chatTypeLabel = isMentioned && isQuotedBot ? 'GROUP (TAG + QUOTE)' : (isMentioned ? 'GROUP (TAGGED)' : 'GROUP (SWIPE REPLY)');
+                            chatTypeLabel = 'GROUP';
+                            triggerReason = check.reason;
                         } else {
-                            // Ignore message silently in groups
+                            // Silently ignore other messages in group
                             continue;
                         }
                     }
 
                     if (!shouldReply) continue;
 
-                    // Clean prompt text (remove @bot tag if present)
+                    // Clean prompt text (remove @botPhone and @botLid from prompt)
                     let promptText = rawText.trim();
-                    if (botPhone) {
-                        promptText = promptText.replace(new RegExp(`@${botPhone}`, 'g'), '').trim();
+                    if (botUser) {
+                        const botPhoneDigits = botUser.id ? botUser.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+                        const botLidDigits = botUser.lid ? botUser.lid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+                        if (botPhoneDigits) {
+                            promptText = promptText.replace(new RegExp(`@${botPhoneDigits}`, 'g'), '').trim();
+                        }
+                        if (botLidDigits) {
+                            promptText = promptText.replace(new RegExp(`@${botLidDigits}`, 'g'), '').trim();
+                        }
                     }
                     if (!promptText) promptText = rawText.trim();
 
@@ -261,11 +327,12 @@ async function connectToWhatsApp(forcedPhone = null) {
                     const senderPhone = senderJid.replace(/[^0-9]/g, '');
                     const pushName = msg.pushName || senderPhone;
 
-                    // Distinct context key for memory
+                    // Distinct context key for conversation memory
                     const memoryKey = isGroup ? `${remoteJid}:${senderPhone}` : remoteJid;
 
-                    addLog('incoming', `[${chatTypeLabel}] From ${pushName} (+${senderPhone}): "${rawText.trim()}"`, {
+                    addLog('incoming', `[${chatTypeLabel} - ${triggerReason}] From ${pushName} (+${senderPhone}): "${rawText.trim()}"`, {
                         chatType: chatTypeLabel,
+                        triggerReason,
                         isGroup,
                         from: senderPhone,
                         senderName: pushName,
@@ -295,8 +362,11 @@ async function connectToWhatsApp(forcedPhone = null) {
                         // ignore
                     }
 
-                    // Send reply to WhatsApp (quote the triggering message)
-                    await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+                    // Send reply to WhatsApp (quote the triggering message, mention sender if in group)
+                    await sock.sendMessage(remoteJid, {
+                        text: replyText,
+                        mentions: isGroup ? [senderJid] : undefined
+                    }, { quoted: msg });
 
                     addLog('reply', `[${chatTypeLabel} REPLY] To ${pushName}: "${replyText.substring(0, 100)}${replyText.length > 100 ? '...' : ''}"`, {
                         to: senderPhone,
@@ -328,7 +398,6 @@ async function requestPairingCode(phoneNumber) {
     if (!sock || !isSocketReady) {
         addLog('info', 'Starting fresh socket for pairing code...');
         await connectToWhatsApp();
-        // Wait up to 5 seconds for socket to be ready
         for (let i = 0; i < 10; i++) {
             if (isSocketReady) break;
             await new Promise(r => setTimeout(r, 500));
@@ -340,7 +409,7 @@ async function requestPairingCode(phoneNumber) {
         const formattedCode = rawCode?.match(/.{1,4}/g)?.join('-') || rawCode;
         botState.pairingCode = formattedCode;
         botState.pairingPhone = cleanNumber;
-        botState.pairingCodeExpiresAt = Date.now() + 3 * 60 * 1000; // 3 minutes
+        botState.pairingCodeExpiresAt = Date.now() + 3 * 60 * 1000;
 
         console.log('\n=============================================');
         console.log(`       WHATSAPP PAIRING CODE: ${formattedCode}`);
