@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp AI Bot - NVIDIA Nemotron 3.5 Bolt</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --bg-card-hover: #26354a;
+            --border: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --wa-green: #25D366;
+            --nv-green: #76B900;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: rgba(30, 41, 59, 0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, var(--wa-green), var(--nv-green));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 700;
+            box-shadow: 0 4px 12px rgba(37, 211, 102, 0.25);
+        }
+
+        .brand h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .brand p {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            background: rgba(15, 23, 42, 0.6);
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--warning);
+            display: inline-block;
+        }
+
+        .dot.connected {
+            background-color: var(--wa-green);
+            box-shadow: 0 0 10px var(--wa-green);
+        }
+
+        .dot.scanning {
+            background-color: var(--warning);
+            box-shadow: 0 0 10px var(--warning);
+            animation: pulse 1.5s infinite;
+        }
+
+        .dot.disconnected {
+            background-color: var(--danger);
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.7; }
+            50% { transform: scale(1.15); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.7; }
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 2rem auto;
+            padding: 0 1.5rem;
+            display: grid;
+            grid-template-columns: 440px 1fr;
+            gap: 1.5rem;
+            flex: 1;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        }
+
+        .card h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: var(--text-primary);
+        }
+
+        /* Tabs */
+        .tab-bar {
+            display: flex;
+            background: rgba(15, 23, 42, 0.7);
+            border-radius: 10px;
+            padding: 4px;
+            border: 1px solid var(--border);
+            gap: 4px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            background: transparent;
+            color: var(--text-secondary);
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+        }
+
+        /* Pairing Code Form */
+        .pairing-box {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #0f172a;
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .input-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .input-row input {
+            flex: 1;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: white;
+            font-size: 0.95rem;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+
+        .input-row input:focus {
+            border-color: var(--wa-green);
+        }
+
+        .code-display {
+            background: rgba(37, 211, 102, 0.08);
+            border: 1px solid rgba(37, 211, 102, 0.3);
+            border-radius: 10px;
+            padding: 1rem;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .code-display .label {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--wa-green);
+            font-weight: 700;
+        }
+
+        .code-display .code-val {
+            font-size: 1.8rem;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: 0.15em;
+            color: var(--text-primary);
+            cursor: pointer;
+            user-select: all;
+            padding: 4px 12px;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        /* QR Container */
+        .qr-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #0f172a;
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            min-height: 260px;
+            text-align: center;
+            position: relative;
+        }
+
+        .qr-image {
+            width: 220px;
+            height: 220px;
+            border-radius: 8px;
+            background: white;
+            padding: 8px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+
+        .connected-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 1.5rem 0;
+        }
+
+        .check-circle {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            background: rgba(37, 211, 102, 0.15);
+            border: 2px solid var(--wa-green);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            color: var(--wa-green);
+        }
+
+        .user-phone {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .user-name {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .steps-box {
+            background: rgba(15, 23, 42, 0.5);
+            border-radius: 10px;
+            padding: 1rem;
+            font-size: 0.83rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+
+        .steps-box ol {
+            margin-left: 1.2rem;
+            margin-top: 0.5rem;
+        }
+
+        .steps-box li {
+            margin-bottom: 0.35rem;
+        }
+
+        .btn {
+            background: rgba(30, 41, 59, 0.9);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.6rem 1rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn:hover {
+            background: var(--bg-card-hover);
+            border-color: #475569;
+        }
+
+        .btn-primary {
+            background: var(--wa-green);
+            color: #000;
+            border: none;
+            font-weight: 700;
+        }
+
+        .btn-primary:hover {
+            background: #20ba5a;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Toggle switch */
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #475569;
+            transition: .3s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--wa-green);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(20px);
+        }
+
+        /* Meta tags / info */
+        .meta-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .meta-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .meta-label {
+            color: var(--text-secondary);
+        }
+
+        .meta-val {
+            font-weight: 600;
+            color: var(--nv-green);
+        }
+
+        /* Message Logs */
+        .logs-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 540px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .log-entry {
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+            border-left: 4px solid var(--border);
+            font-size: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-entry.incoming {
+            border-left-color: var(--wa-green);
+            background: rgba(37, 211, 102, 0.04);
+        }
+
+        .log-entry.reply {
+            border-left-color: var(--nv-green);
+            background: rgba(118, 185, 0, 0.05);
+        }
+
+        .log-entry.error {
+            border-left-color: var(--danger);
+            background: rgba(239, 68, 68, 0.05);
+        }
+
+        .log-entry.qr, .log-entry.info {
+            border-left-color: #38bdf8;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .log-badge {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            font-weight: 700;
+        }
+
+        .incoming .log-badge {
+            color: var(--wa-green);
+            background: rgba(37, 211, 102, 0.15);
+        }
+
+        .reply .log-badge {
+            color: var(--nv-green);
+            background: rgba(118, 185, 0, 0.15);
+        }
+
+        .log-msg {
+            color: var(--text-primary);
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .empty-logs {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 3rem 1rem;
+            font-size: 0.9rem;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <div class="brand-icon">⚡</div>
+            <div>
+                <h1>WhatsApp AI Assistant</h1>
+                <p>Powered by NVIDIA NIM & Nemotron 3.5 Bolt</p>
+            </div>
+        </div>
+
+        <div class="header-controls">
+            <div id="statusPill" class="status-pill">
+                <span id="statusDot" class="dot"></span>
+                <span id="statusText">Initializing...</span>
+            </div>
+            <button class="btn" onclick="restartBot()" title="Restart WhatsApp Connection">🔄 Reconnect</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Left Column: WhatsApp Connection & Controls -->
+        <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+            <div class="card">
+                <h2>
+                    <span>WhatsApp Link</span>
+                    <span id="miniStateBadge" style="font-size: 0.75rem; font-weight: 500; color: var(--text-secondary);">Connecting...</span>
+                </h2>
+
+                <!-- Connection Mode Switcher (Pairing Code vs QR) -->
+                <div id="modeSwitcher" class="tab-bar">
+                    <button id="btnTabPairing" class="tab-btn active" onclick="switchTab('pairing')">🔢 Pairing Code</button>
+                    <button id="btnTabQR" class="tab-btn" onclick="switchTab('qr')">📷 QR Code</button>
+                </div>
+
+                <!-- 1. Pairing Code View -->
+                <div id="pairingView" class="pairing-box">
+                    <div class="input-group">
+                        <label>Enter WhatsApp Phone Number (with Country Code):</label>
+                        <div class="input-row">
+                            <input type="text" id="phoneInput" placeholder="e.g. 919876543210" />
+                            <button id="getPairingBtn" class="btn btn-primary" onclick="generatePairingCode()">Get Code</button>
+                        </div>
+                    </div>
+
+                    <div id="pairingResult" style="display: none;" class="code-display">
+                        <span class="label">Your WhatsApp Pairing Code:</span>
+                        <div class="code-val" id="pairingCodeVal" onclick="copyPairingCode()" title="Click to copy">----</div>
+                        <span style="font-size: 0.75rem; color: var(--text-secondary);">Click code to copy</span>
+                    </div>
+
+                    <div id="pairingError" style="display: none; color: var(--danger); font-size: 0.8rem;"></div>
+                </div>
+
+                <!-- 2. QR Code View (Initially hidden or shown on tab switch) -->
+                <div id="qrView" style="display: none;" class="qr-wrapper">
+                    <div id="qrContent">
+                        <p style="color: var(--text-secondary);">Preparing WhatsApp QR Code...</p>
+                    </div>
+                </div>
+
+                <!-- Connected View (Replaces pairing/QR when connected) -->
+                <div id="connectedView" style="display: none;" class="qr-wrapper">
+                    <div class="connected-state">
+                        <div class="check-circle">✓</div>
+                        <div class="user-phone" id="connectedPhone">+91XXXXXXXXXX</div>
+                        <div class="user-name" id="connectedName">WhatsApp Account</div>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">
+                            WhatsApp linked! Private chats aur Group tags pe AI reply karega.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="steps-box">
+                    <strong>📱 Pairing Code Kaise Use Karein:</strong>
+                    <ol>
+                        <li>Upar apna WhatsApp phone number enter karein aur <strong>Get Code</strong> dabayein.</li>
+                        <li>Apne phone me WhatsApp open karein -> <strong>Settings > Linked Devices</strong>.</li>
+                        <li><strong>Link a Device</strong> par tap karein.</li>
+                        <li>Neeche <strong>"Link with phone number instead"</strong> par tap karein.</li>
+                        <li>Screen par dikhaya gaya 8-character pairing code enter karein!</li>
+                    </ol>
+                </div>
+
+                <div class="toggle-row">
+                    <div>
+                        <div style="font-weight: 600; font-size: 0.9rem;">Auto-Reply Active</div>
+                        <div style="font-size: 0.75rem; color: var(--text-secondary);">Automatically reply to private & tagged group messages</div>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" id="autoReplyToggle" checked onchange="handleToggleAutoReply(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Model Info Card -->
+            <div class="card">
+                <h2>AI Engine Details</h2>
+                <div class="meta-list">
+                    <div class="meta-item">
+                        <span class="meta-label">Model</span>
+                        <span class="meta-val" id="modelName">nvidia/nemotron-3.5-bolt-e4b</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Provider</span>
+                        <span class="meta-val">NVIDIA NIM API</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Rules</span>
+                        <span style="font-weight: 600; color: var(--text-primary); text-align: right;">Private: All | Group: @Tag / Swipe</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Host</span>
+                        <span style="font-weight: 600; color: var(--text-primary);">Localhost:3000</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Live Message & Activity Feed -->
+        <div class="card" style="height: 100%;">
+            <h2>
+                <span>Live Activity & Message Feed</span>
+                <span id="logCount" style="font-size: 0.8rem; color: var(--text-secondary);">0 events</span>
+            </h2>
+
+            <div id="logsContainer" class="logs-container">
+                <div class="empty-logs">
+                    Waiting for incoming messages or connection events...<br>
+                    <small>Jab koi message aayega, yahan real-time dikhega.</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentTab = 'pairing';
+        let isConnected = false;
+
+        function switchTab(tab) {
+            currentTab = tab;
+            const btnPairing = document.getElementById('btnTabPairing');
+            const btnQR = document.getElementById('btnTabQR');
+            const pairingView = document.getElementById('pairingView');
+            const qrView = document.getElementById('qrView');
+
+            if (tab === 'pairing') {
+                btnPairing.classList.add('active');
+                btnQR.classList.remove('active');
+                pairingView.style.display = 'flex';
+                qrView.style.display = 'none';
+            } else {
+                btnQR.classList.add('active');
+                btnPairing.classList.remove('active');
+                qrView.style.display = 'flex';
+                pairingView.style.display = 'none';
+            }
+        }
+
+        async function generatePairingCode() {
+            const phoneInput = document.getElementById('phoneInput');
+            const getBtn = document.getElementById('getPairingBtn');
+            const resultBox = document.getElementById('pairingResult');
+            const codeVal = document.getElementById('pairingCodeVal');
+            const errBox = document.getElementById('pairingError');
+
+            const phone = phoneInput.value.trim().replace(/[^0-9]/g, '');
+            if (!phone || phone.length < 8) {
+                errBox.innerText = 'Kripya country code ke sath valid phone number dalein (e.g. 919876543210).';
+                errBox.style.display = 'block';
+                return;
+            }
+
+            errBox.style.display = 'none';
+            getBtn.disabled = true;
+            getBtn.innerText = 'Getting...';
+
+            try {
+                const res = await fetch('/api/request-pairing-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phoneNumber: phone })
+                });
+                const data = await res.json();
+                if (data.success && data.pairingCode) {
+                    codeVal.innerText = data.pairingCode;
+                    resultBox.style.display = 'flex';
+                } else {
+                    errBox.innerText = data.error || 'Pairing code generate nahi ho paya. Kripya dubara try karein.';
+                    errBox.style.display = 'block';
+                }
+            } catch (err) {
+                errBox.innerText = 'Server error: ' + err.message;
+                errBox.style.display = 'block';
+            } finally {
+                getBtn.disabled = false;
+                getBtn.innerText = 'Get Code';
+            }
+        }
+
+        function copyPairingCode() {
+            const code = document.getElementById('pairingCodeVal').innerText;
+            if (code && code !== '----') {
+                navigator.clipboard.writeText(code.replace('-', ''));
+                alert('Copied to clipboard: ' + code);
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                renderUI(data);
+            } catch (err) {
+                console.error('Failed to fetch status:', err);
+                updateStatusBadge('disconnected', 'Server Offline');
+            }
+        }
+
+        function updateStatusBadge(status, text) {
+            const dot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            dot.className = 'dot ' + status;
+            statusText.innerText = text;
+        }
+
+        function renderUI(data) {
+            const miniBadge = document.getElementById('miniStateBadge');
+            const autoReplyToggle = document.getElementById('autoReplyToggle');
+            const modelName = document.getElementById('modelName');
+            const modeSwitcher = document.getElementById('modeSwitcher');
+            const pairingView = document.getElementById('pairingView');
+            const qrView = document.getElementById('qrView');
+            const connectedView = document.getElementById('connectedView');
+            const qrContent = document.getElementById('qrContent');
+            const pairingResult = document.getElementById('pairingResult');
+            const pairingCodeVal = document.getElementById('pairingCodeVal');
+
+            if (data.model) {
+                modelName.innerText = data.model;
+            }
+
+            autoReplyToggle.checked = Boolean(data.autoReply);
+
+            // If pairing code exists from server
+            if (data.pairingCode && pairingResult.style.display === 'none') {
+                pairingCodeVal.innerText = data.pairingCode;
+                pairingResult.style.display = 'flex';
+            }
+
+            // Connection state
+            if (data.status === 'connected') {
+                isConnected = true;
+                updateStatusBadge('connected', 'Online & Active');
+                miniBadge.innerText = 'Connected';
+                miniBadge.style.color = 'var(--wa-green)';
+
+                modeSwitcher.style.display = 'none';
+                pairingView.style.display = 'none';
+                qrView.style.display = 'none';
+                connectedView.style.display = 'flex';
+
+                const phone = data.user?.id ? data.user.id.split(':')[0] : 'WhatsApp User';
+                const name = data.user?.name || data.user?.notify || 'Connected Account';
+                document.getElementById('connectedPhone').innerText = '+' + phone;
+                document.getElementById('connectedName').innerText = name;
+
+            } else {
+                isConnected = false;
+                connectedView.style.display = 'none';
+                modeSwitcher.style.display = 'flex';
+
+                if (currentTab === 'pairing') {
+                    pairingView.style.display = 'flex';
+                    qrView.style.display = 'none';
+                } else {
+                    pairingView.style.display = 'none';
+                    qrView.style.display = 'flex';
+                }
+
+                if (data.status === 'qr_ready' && data.qrCodeDataUrl) {
+                    updateStatusBadge('scanning', 'Waiting for Link');
+                    miniBadge.innerText = 'Waiting for code/scan...';
+                    miniBadge.style.color = 'var(--warning)';
+
+                    qrContent.innerHTML = `
+                        <img class="qr-image" src="${data.qrCodeDataUrl}" alt="WhatsApp QR Code" />
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 10px;">
+                            Camera scan karein (QR auto-refresh hota hai)
+                        </p>
+                    `;
+                } else if (data.status === 'reconnecting') {
+                    updateStatusBadge('scanning', 'Reconnecting...');
+                    miniBadge.innerText = 'Reconnecting...';
+                } else {
+                    updateStatusBadge('disconnected', 'Disconnected');
+                    miniBadge.innerText = 'Disconnected';
+                }
+            }
+
+            // Render Logs
+            renderLogs(data.logs || []);
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logsContainer');
+            const logCount = document.getElementById('logCount');
+
+            logCount.innerText = `${logs.length} events`;
+
+            if (!logs || logs.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-logs">
+                        Waiting for incoming messages or connection events...<br>
+                        <small>Jab koi message aayega, yahan real-time dikhega.</small>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = logs.map(log => {
+                const typeClass = log.type || 'info';
+                return `
+                    <div class="log-entry ${typeClass}">
+                        <div class="log-header">
+                            <span class="log-badge">${log.type}</span>
+                            <span>${log.time}</span>
+                        </div>
+                        <div class="log-msg">${escapeHtml(log.message)}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        async function handleToggleAutoReply(checked) {
+            try {
+                await fetch('/api/toggle-autoreply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: checked })
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function restartBot() {
+            try {
+                updateStatusBadge('scanning', 'Restarting...');
+                await fetch('/api/restart', { method: 'POST' });
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // Poll every 2 seconds
+        setInterval(fetchStatus, 2000);
+        fetchStatus();
+    </script>
+</body>
+</html>

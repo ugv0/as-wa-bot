@@ -1,0 +1,388 @@
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    Browsers
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
+const path = require('path');
+const fs = require('fs');
+const QRCode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
+const { askNemotron, clearHistory, NIM_MODEL } = require('./ai');
+
+const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
+
+// Bot State Object
+const botState = {
+    status: 'initializing', // 'initializing', 'qr_ready', 'connected', 'disconnected', 'reconnecting'
+    qrCodeDataUrl: null,
+    qrRaw: null,
+    pairingCode: null,
+    pairingPhone: null,
+    pairingCodeExpiresAt: null,
+    user: null,
+    autoReply: true,
+    logs: [],
+    model: NIM_MODEL,
+    startedAt: new Date().toISOString()
+};
+
+function addLog(type, message, details = null) {
+    const logEntry = {
+        id: Date.now() + Math.random().toString(36).substring(2, 6),
+        time: new Date().toLocaleTimeString('en-US', { hour12: false }),
+        type, // 'info', 'incoming', 'reply', 'error', 'qr'
+        message,
+        details
+    };
+    botState.logs.unshift(logEntry);
+    if (botState.logs.length > 100) {
+        botState.logs.pop();
+    }
+    console.log(`[${logEntry.time}] [${type.toUpperCase()}] ${message}`);
+}
+
+let sock = null;
+let isReconnecting = false;
+let isSocketReady = false;
+
+// Extract text from WhatsApp message object
+function extractMessageText(msg) {
+    if (!msg.message) return null;
+    const m = msg.message;
+    return (
+        m.conversation ||
+        m.extendedTextMessage?.text ||
+        m.imageMessage?.caption ||
+        m.videoMessage?.caption ||
+        m.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+        null
+    );
+}
+
+// Extract contextInfo for mention and quote detection
+function getContextInfo(msg) {
+    if (!msg.message) return {};
+    const m = msg.message;
+    return (
+        m.extendedTextMessage?.contextInfo ||
+        m.imageMessage?.contextInfo ||
+        m.videoMessage?.contextInfo ||
+        m.documentMessage?.contextInfo ||
+        m.documentWithCaptionMessage?.message?.documentMessage?.contextInfo ||
+        m.buttonsResponseMessage?.contextInfo ||
+        m.templateButtonReplyMessage?.contextInfo ||
+        m.listResponseMessage?.contextInfo ||
+        {}
+    );
+}
+
+async function connectToWhatsApp(forcedPhone = null) {
+    try {
+        if (!fs.existsSync(AUTH_DIR)) {
+            fs.mkdirSync(AUTH_DIR, { recursive: true });
+        }
+
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+        const { version, isLatest } = await fetchLatestBaileysVersion();
+        addLog('info', `Using Baileys v${version.join('.')}${isLatest ? ' (latest)' : ''}`);
+
+        isSocketReady = false;
+
+        sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            auth: state,
+            browser: Browsers.ubuntu('Chrome'),
+            connectTimeoutMs: 120000,
+            defaultQueryTimeoutMs: 120000,
+            qrTimeout: 300000, // 5 minutes timeout to give plenty of time for pairing
+            syncFullHistory: false,
+            generateHighQualityLinkPreview: false,
+            markOnlineOnConnect: true
+        });
+
+        // Save session credentials whenever updated
+        sock.ev.on('creds.update', saveCreds);
+
+        // Connection update handler
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                isSocketReady = true;
+                botState.qrRaw = qr;
+                botState.status = 'qr_ready';
+                try {
+                    botState.qrCodeDataUrl = await QRCode.toDataURL(qr, { scale: 8, margin: 2 });
+                } catch (qrErr) {
+                    console.error('Failed to generate QR data URL:', qrErr);
+                }
+
+                // If user didn't explicitly request pairing code, show QR in terminal
+                if (!botState.pairingCode) {
+                    console.log('\n=============================================');
+                    console.log('       SCAN QR CODE OR USE PAIRING CODE      ');
+                    console.log(' (Open http://localhost:3000 in your browser) ');
+                    console.log('=============================================\n');
+                    qrcodeTerminal.generate(qr, { small: true });
+                    addLog('qr', 'QR Code ready. (Or use 8-digit Pairing Code on dashboard).');
+                }
+            }
+
+            if (connection === 'close') {
+                isSocketReady = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                botState.status = 'disconnected';
+                botState.qrCodeDataUrl = null;
+                botState.qrRaw = null;
+                botState.user = null;
+
+                addLog('info', `Connection closed. Reason status: ${statusCode || 'unknown'}. Reconnecting: ${shouldReconnect}`);
+
+                if (shouldReconnect) {
+                    if (!isReconnecting) {
+                        isReconnecting = true;
+                        botState.status = 'reconnecting';
+                        setTimeout(() => {
+                            isReconnecting = false;
+                            connectToWhatsApp();
+                        }, 5000);
+                    }
+                } else {
+                    addLog('error', 'Device logged out. Clearing auth credentials...');
+                    try {
+                        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                    } catch (e) {
+                        console.error('Error clearing auth:', e);
+                    }
+                    botState.pairingCode = null;
+                    botState.pairingPhone = null;
+                    botState.status = 'disconnected';
+                    setTimeout(() => connectToWhatsApp(), 3000);
+                }
+            } else if (connection === 'open') {
+                isSocketReady = true;
+                botState.status = 'connected';
+                botState.qrCodeDataUrl = null;
+                botState.qrRaw = null;
+                botState.pairingCode = null;
+                botState.pairingPhone = null;
+                botState.user = sock.user;
+
+                const userPhone = sock.user?.id ? sock.user.id.split(':')[0] : 'Unknown';
+                const userName = sock.user?.name || sock.user?.notify || 'WhatsApp User';
+
+                console.log('\n=============================================');
+                console.log(` ✅ WHATSAPP CONNECTED: +${userPhone} (${userName})`);
+                console.log('=============================================\n');
+
+                addLog('info', `WhatsApp connected successfully as: ${userName} (+${userPhone})`);
+            }
+        });
+
+        // Messages upsert handler
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+
+            for (const msg of messages) {
+                try {
+                    if (!msg.message) continue;
+
+                    const remoteJid = msg.key.remoteJid;
+                    if (!remoteJid) continue;
+
+                    // Filter 1: Ignore status broadcasts
+                    if (remoteJid === 'status@broadcast' || remoteJid.includes('@broadcast')) {
+                        continue;
+                    }
+
+                    // Filter 2: Ignore messages sent by bot itself to avoid infinite loops
+                    if (msg.key.fromMe) {
+                        continue;
+                    }
+
+                    // Extract text
+                    const rawText = extractMessageText(msg);
+                    if (!rawText || !rawText.trim()) {
+                        continue;
+                    }
+
+                    const isGroup = remoteJid.endsWith('@g.us');
+                    const contextInfo = getContextInfo(msg);
+
+                    // Extract bot's own phone / ID
+                    const botPhone = sock.user?.id ? sock.user.id.split(':')[0].replace(/[^0-9]/g, '') : null;
+
+                    let shouldReply = false;
+                    let chatTypeLabel = 'PRIVATE';
+
+                    if (!isGroup) {
+                        // In Private Chats: Always reply!
+                        shouldReply = true;
+                        chatTypeLabel = 'PRIVATE';
+                    } else {
+                        // In Group Chats: Check for @mention or quote-reply to bot
+                        const mentionedJid = contextInfo.mentionedJid || [];
+                        const isMentioned = Boolean(
+                            botPhone && (
+                                mentionedJid.some(j => j.includes(botPhone)) ||
+                                rawText.includes(`@${botPhone}`)
+                            )
+                        );
+
+                        const quotedParticipant = contextInfo.participant ? contextInfo.participant.replace(/[^0-9]/g, '') : null;
+                        const isQuotedBot = Boolean(botPhone && quotedParticipant && quotedParticipant === botPhone);
+
+                        if (isMentioned || isQuotedBot) {
+                            shouldReply = true;
+                            chatTypeLabel = isMentioned && isQuotedBot ? 'GROUP (TAG + QUOTE)' : (isMentioned ? 'GROUP (TAGGED)' : 'GROUP (SWIPE REPLY)');
+                        } else {
+                            // Ignore message silently in groups
+                            continue;
+                        }
+                    }
+
+                    if (!shouldReply) continue;
+
+                    // Clean prompt text (remove @bot tag if present)
+                    let promptText = rawText.trim();
+                    if (botPhone) {
+                        promptText = promptText.replace(new RegExp(`@${botPhone}`, 'g'), '').trim();
+                    }
+                    if (!promptText) promptText = rawText.trim();
+
+                    // Sender identity
+                    const senderJid = isGroup ? (msg.key.participant || remoteJid) : remoteJid;
+                    const senderPhone = senderJid.replace(/[^0-9]/g, '');
+                    const pushName = msg.pushName || senderPhone;
+
+                    // Distinct context key for memory
+                    const memoryKey = isGroup ? `${remoteJid}:${senderPhone}` : remoteJid;
+
+                    addLog('incoming', `[${chatTypeLabel}] From ${pushName} (+${senderPhone}): "${rawText.trim()}"`, {
+                        chatType: chatTypeLabel,
+                        isGroup,
+                        from: senderPhone,
+                        senderName: pushName,
+                        text: rawText.trim()
+                    });
+
+                    // Check if auto-reply is enabled
+                    if (!botState.autoReply) {
+                        addLog('info', `Auto-reply is paused. Skipped reply to ${pushName}.`);
+                        continue;
+                    }
+
+                    // Send "typing..." presence
+                    try {
+                        await sock.sendPresenceUpdate('composing', remoteJid);
+                    } catch (pErr) {
+                        // ignore
+                    }
+
+                    // Call NVIDIA Nemotron 3.5 Bolt
+                    const replyText = await askNemotron(memoryKey, promptText);
+
+                    // Stop typing indicator
+                    try {
+                        await sock.sendPresenceUpdate('paused', remoteJid);
+                    } catch (pErr) {
+                        // ignore
+                    }
+
+                    // Send reply to WhatsApp (quote the triggering message)
+                    await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+
+                    addLog('reply', `[${chatTypeLabel} REPLY] To ${pushName}: "${replyText.substring(0, 100)}${replyText.length > 100 ? '...' : ''}"`, {
+                        to: senderPhone,
+                        reply: replyText
+                    });
+
+                } catch (msgErr) {
+                    addLog('error', `Error processing message: ${msgErr.message}`);
+                }
+            }
+        });
+
+    } catch (err) {
+        addLog('error', `Failed to connect WhatsApp: ${err.message}`);
+    }
+}
+
+async function requestPairingCode(phoneNumber) {
+    const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
+    if (!cleanNumber || cleanNumber.length < 8) {
+        throw new Error('Invalid phone number. Kripya country code ke sath dalein (e.g. 919876543210).');
+    }
+
+    if (sock?.authState?.creds?.registered) {
+        throw new Error('Account pehle se connected hai!');
+    }
+
+    // If socket is not ready or null, reconnect fresh
+    if (!sock || !isSocketReady) {
+        addLog('info', 'Starting fresh socket for pairing code...');
+        await connectToWhatsApp();
+        // Wait up to 5 seconds for socket to be ready
+        for (let i = 0; i < 10; i++) {
+            if (isSocketReady) break;
+            await new Promise(r => setTimeout(r, 500));
+        }
+    }
+
+    try {
+        const rawCode = await sock.requestPairingCode(cleanNumber);
+        const formattedCode = rawCode?.match(/.{1,4}/g)?.join('-') || rawCode;
+        botState.pairingCode = formattedCode;
+        botState.pairingPhone = cleanNumber;
+        botState.pairingCodeExpiresAt = Date.now() + 3 * 60 * 1000; // 3 minutes
+
+        console.log('\n=============================================');
+        console.log(`       WHATSAPP PAIRING CODE: ${formattedCode}`);
+        console.log(`       Target Phone: +${cleanNumber}`);
+        console.log('=============================================\n');
+
+        addLog('info', `Pairing Code generated: ${formattedCode} for +${cleanNumber}`);
+        return formattedCode;
+    } catch (err) {
+        addLog('error', `Pairing code generation failed: ${err.message}`);
+        throw err;
+    }
+}
+
+function getBotState() {
+    return botState;
+}
+
+function setAutoReply(enabled) {
+    botState.autoReply = Boolean(enabled);
+    addLog('info', `Auto-reply set to: ${botState.autoReply ? 'ENABLED' : 'DISABLED'}`);
+    return botState.autoReply;
+}
+
+async function restartBot() {
+    addLog('info', 'Manual restart requested.');
+    if (sock) {
+        try {
+            sock.end(undefined);
+        } catch (e) {
+            // ignore
+        }
+    }
+    setTimeout(() => {
+        connectToWhatsApp();
+    }, 1500);
+}
+
+module.exports = {
+    connectToWhatsApp,
+    requestPairingCode,
+    getBotState,
+    setAutoReply,
+    restartBot
+};
