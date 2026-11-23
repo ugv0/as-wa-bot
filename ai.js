@@ -23,7 +23,7 @@ function cleanOldHistories() {
 const cleanupTimer = setInterval(cleanOldHistories, 15 * 60 * 1000);
 if (cleanupTimer.unref) cleanupTimer.unref();
 
-async function askNemotron(remoteJid, userMessage) {
+async function askNemotron(remoteJid, userMessage, customSystemPrompt = null) {
     if (!NIM_API_KEY) {
         throw new Error('NIM_API_KEY is not defined in environment variables.');
     }
@@ -44,9 +44,11 @@ async function askNemotron(remoteJid, userMessage) {
     }
     chatHistories.set(remoteJid, history);
 
+    const activePrompt = customSystemPrompt || SYSTEM_PROMPT;
+
     // Prepare payload for NIM OpenAI-compatible API
     const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: activePrompt },
         ...history.map(item => ({ role: item.role, content: item.content }))
     ];
 

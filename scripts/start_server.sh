@@ -21,7 +21,7 @@ sync_credentials() {
     if [ -n "$GH_PAT" ]; then
         git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${REPO}.git"
     fi
-    git add session.enc
+    git add session.enc endpoint.txt 2>/dev/null || true
     git commit -m "chore(auth): sync updated encrypted session [skip ci]" || echo "No session changes to commit."
     git push origin main || echo "Git push skipped or no changes."
 }
@@ -32,6 +32,10 @@ cleanup() {
         echo "Stopping WhatsApp bot process (PID: $SERVER_PID)..."
         kill -TERM "$SERVER_PID" 2>/dev/null || true
         sleep 4
+    fi
+    if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
+        echo "Stopping Cloudflare Tunnel..."
+        kill -TERM "$TUNNEL_PID" 2>/dev/null || true
     fi
     sync_credentials || true
     exit 0
@@ -51,6 +55,41 @@ for i in $(seq 1 40); do
     fi
     sleep 1
 done
+
+# Install & Start Cloudflare Tunnel for Remote Dashboard Access
+if ! command -v cloudflared &> /dev/null; then
+    echo "Installing Cloudflared..."
+    curl -sL --output cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    chmod +x cloudflared
+    sudo mv cloudflared /usr/local/bin/cloudflared || true
+fi
+
+if command -v cloudflared &> /dev/null; then
+    echo "Launching Cloudflare Quick Tunnel on port $PORT..."
+    cloudflared tunnel --url "http://127.0.0.1:$PORT" --no-autoupdate > tunnel.log 2>&1 &
+    TUNNEL_PID=$!
+
+    for i in $(seq 1 45); do
+        sleep 1
+        if grep -o "https://[-a-zA-Z0-9@:%._\+~#=]\+\.trycloudflare\.com" tunnel.log | grep -v "api.trycloudflare.com" > /dev/null 2>&1; then
+            PUBLIC_URL=$(grep -o "https://[-a-zA-Z0-9@:%._\+~#=]\+\.trycloudflare\.com" tunnel.log | grep -v "api.trycloudflare.com" | head -n 1)
+            echo "===================================================================="
+            echo " 🌐 LIVE CLOUDFLARE BOT RELAY URL: $PUBLIC_URL"
+            echo "===================================================================="
+            echo "$PUBLIC_URL" > endpoint.txt
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            if [ -n "$GH_PAT" ]; then
+                git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${REPO}.git"
+            fi
+            git add endpoint.txt
+            git commit -m "chore: update live endpoint.txt [skip ci]" || true
+            git push origin main || true
+            break
+        fi
+    done
+fi
 
 echo "Active session serving incoming WhatsApp messages for ${RESTART_INTERVAL} seconds..."
 sleep "$RESTART_INTERVAL"

@@ -1,15 +1,38 @@
 const express = require('express');
 const path = require('path');
-const { getBotState, setAutoReply, restartBot, requestPairingCode } = require('./whatsapp');
+const cors = require('cors');
+const { getBotState, getBotSettings, updateBotSettings, setAutoReply, restartBot, requestPairingCode } = require('./whatsapp');
 
 function createServer(port = 3000) {
     const app = express();
     app.use(express.json());
+
+    // Enable CORS for external dashboard / Vercel
+    app.use((req, res, next) => {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+        if (req.method === 'OPTIONS') {
+            return res.sendStatus(200);
+        }
+        next();
+    });
+
     app.use(express.static(path.join(__dirname, 'public')));
 
     // Status API
     app.get('/api/status', (req, res) => {
         res.json(getBotState());
+    });
+
+    // Settings API (Get & Update all settings)
+    app.get('/api/settings', (req, res) => {
+        res.json({ success: true, settings: getBotSettings() });
+    });
+
+    app.post('/api/settings', (req, res) => {
+        const updated = updateBotSettings(req.body);
+        res.json({ success: true, settings: updated });
     });
 
     // Request Pairing Code

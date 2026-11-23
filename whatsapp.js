@@ -14,6 +14,15 @@ const { askNemotron, clearHistory, NIM_MODEL } = require('./ai');
 
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
 
+const botSettings = {
+    autoReply: true,
+    onlyDm: false,
+    selfTag: true,
+    swipeReply: true,
+    allTag: true,
+    systemPrompt: process.env.SYSTEM_PROMPT || 'You are a helpful, friendly, and smart WhatsApp AI assistant powered by NVIDIA Nemotron 3.5 Bolt. Keep your responses conversational, natural, and concise suitable for WhatsApp messages. Match the language of the user (e.g. Hindi, Hinglish, English, etc.).'
+};
+
 // Bot State Object
 const botState = {
     status: 'initializing', // 'initializing', 'qr_ready', 'connected', 'disconnected', 'reconnecting'
@@ -24,6 +33,7 @@ const botState = {
     pairingCodeExpiresAt: null,
     user: null,
     autoReply: true,
+    settings: botSettings,
     logs: [],
     model: NIM_MODEL,
     startedAt: new Date().toISOString()
@@ -310,16 +320,30 @@ async function connectToWhatsApp(forcedPhone = null) {
                         chatTypeLabel = 'PRIVATE';
                         triggerReason = 'PRIVATE_CHAT';
                     } else {
-                        // In Group Chats: Check for @mention or quote-reply to bot
+                        // In Group Chats
+                        if (botSettings.onlyDm) {
+                            // Only DM mode is active -> ignore all groups!
+                            continue;
+                        }
+
                         const check = checkGroupTrigger(msg, rawText, botUser);
-                        if (check.triggered) {
-                            shouldReply = true;
-                            chatTypeLabel = 'GROUP';
-                            triggerReason = check.reason;
-                        } else {
+                        if (!check.triggered) {
                             // Silently ignore other messages in group
                             continue;
                         }
+
+                        // Check specific trigger toggles
+                        if (check.reason === 'ALL_TAG_MENTION' || check.reason === 'NATIVE_GROUP_ALL_MENTION' || check.reason === 'GROUP_JID_MENTION') {
+                            if (!botSettings.allTag) continue;
+                        } else if (check.reason === 'QUOTE_SWIPE_REPLY') {
+                            if (!botSettings.swipeReply) continue;
+                        } else if (check.reason === 'MENTION_TAG' || check.reason === 'MENTION_TEXT_PHONE' || check.reason === 'MENTION_TEXT_LID') {
+                            if (!botSettings.selfTag) continue;
+                        }
+
+                        shouldReply = true;
+                        chatTypeLabel = 'GROUP';
+                        triggerReason = check.reason;
                     }
 
                     if (!shouldReply) continue;
@@ -357,8 +381,8 @@ async function connectToWhatsApp(forcedPhone = null) {
                     });
 
                     // Check if auto-reply is enabled
-                    if (!botState.autoReply) {
-                        addLog('info', `Auto-reply is paused. Skipped reply to ${pushName}.`);
+                    if (!botSettings.autoReply) {
+                        addLog('info', `Auto-reply is paused in settings. Skipped reply to ${pushName}.`);
                         continue;
                     }
 
@@ -369,8 +393,8 @@ async function connectToWhatsApp(forcedPhone = null) {
                         // ignore
                     }
 
-                    // Call NVIDIA Nemotron 3.5 Bolt
-                    const replyText = await askNemotron(memoryKey, promptText);
+                    // Call NVIDIA Nemotron 3.5 Bolt with dynamic system prompt
+                    const replyText = await askNemotron(memoryKey, promptText, botSettings.systemPrompt);
 
                     // Stop typing indicator
                     try {
@@ -442,13 +466,35 @@ async function requestPairingCode(phoneNumber) {
 }
 
 function getBotState() {
+    botState.settings = botSettings;
     return botState;
 }
 
+function getBotSettings() {
+    return botSettings;
+}
+
+function updateBotSettings(newSettings) {
+    if (!newSettings || typeof newSettings !== 'object') return botSettings;
+    if (newSettings.autoReply !== undefined) botSettings.autoReply = Boolean(newSettings.autoReply);
+    if (newSettings.onlyDm !== undefined) botSettings.onlyDm = Boolean(newSettings.onlyDm);
+    if (newSettings.selfTag !== undefined) botSettings.selfTag = Boolean(newSettings.selfTag);
+    if (newSettings.swipeReply !== undefined) botSettings.swipeReply = Boolean(newSettings.swipeReply);
+    if (newSettings.allTag !== undefined) botSettings.allTag = Boolean(newSettings.allTag);
+    if (newSettings.systemPrompt && typeof newSettings.systemPrompt === 'string') {
+        botSettings.systemPrompt = newSettings.systemPrompt.trim();
+    }
+    botState.autoReply = botSettings.autoReply;
+    botState.settings = botSettings;
+    addLog('info', `Settings updated: ${JSON.stringify(botSettings)}`);
+    return botSettings;
+}
+
 function setAutoReply(enabled) {
-    botState.autoReply = Boolean(enabled);
-    addLog('info', `Auto-reply set to: ${botState.autoReply ? 'ENABLED' : 'DISABLED'}`);
-    return botState.autoReply;
+    botSettings.autoReply = Boolean(enabled);
+    botState.autoReply = botSettings.autoReply;
+    addLog('info', `Auto-reply set to: ${botSettings.autoReply ? 'ENABLED' : 'DISABLED'}`);
+    return botSettings.autoReply;
 }
 
 async function restartBot() {
@@ -469,6 +515,8 @@ module.exports = {
     connectToWhatsApp,
     requestPairingCode,
     getBotState,
+    getBotSettings,
+    updateBotSettings,
     setAutoReply,
     restartBot
 };
