@@ -107,7 +107,7 @@ function getContextInfo(msg) {
     );
 }
 
-// Check if bot was tagged (@) or quote/swipe-replied in a group
+// Check if bot was tagged (@), quote/swipe-replied, or group tag-all (@everyone / @all) was used
 function checkGroupTrigger(msg, rawText, botUser) {
     if (!botUser) return { triggered: false };
 
@@ -118,7 +118,23 @@ function checkGroupTrigger(msg, rawText, botUser) {
     const contextInfo = getContextInfo(msg);
     const mentionedJids = contextInfo.mentionedJid || [];
 
-    // 1. Check mentioned JIDs in contextInfo
+    // 1. Check WhatsApp Group Mentions (@all / @everyone native feature)
+    if (contextInfo.groupMentions && Array.isArray(contextInfo.groupMentions) && contextInfo.groupMentions.length > 0) {
+        return { triggered: true, reason: 'NATIVE_GROUP_ALL_MENTION' };
+    }
+
+    // 2. Check Text for Tag-All patterns (@all, @everyone, @tagall, @everybody, @group, @members)
+    const ALL_TAG_REGEX = /@(?:all|everyone|tagall|everybody|group|members)\b/i;
+    if (rawText && ALL_TAG_REGEX.test(rawText)) {
+        return { triggered: true, reason: 'ALL_TAG_MENTION' };
+    }
+
+    // 3. Check if group JID itself is in mentionedJid (community/announcement group all-tag)
+    if (msg.key?.remoteJid && mentionedJids.includes(msg.key.remoteJid)) {
+        return { triggered: true, reason: 'GROUP_JID_MENTION' };
+    }
+
+    // 4. Check mentioned JIDs in contextInfo for bot's Phone or LID
     for (const jid of mentionedJids) {
         const cleanJid = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
         if ((botPhoneDigits && cleanJid === botPhoneDigits) || (botLidDigits && cleanJid === botLidDigits)) {
@@ -126,7 +142,7 @@ function checkGroupTrigger(msg, rawText, botUser) {
         }
     }
 
-    // 2. Check text for @botPhone or @botLid
+    // 5. Check text for @botPhone or @botLid
     if (rawText) {
         if (botPhoneDigits && rawText.includes(`@${botPhoneDigits}`)) {
             return { triggered: true, reason: 'MENTION_TEXT_PHONE' };
@@ -136,7 +152,7 @@ function checkGroupTrigger(msg, rawText, botUser) {
         }
     }
 
-    // 3. Check Swipe-Reply / Quote of a message sent by the bot
+    // 6. Check Swipe-Reply / Quote of a message sent by the bot
     if (contextInfo.quotedMessage && contextInfo.participant) {
         const quotedSender = contextInfo.participant.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
         if ((botPhoneDigits && quotedSender === botPhoneDigits) || (botLidDigits && quotedSender === botLidDigits)) {
@@ -308,7 +324,7 @@ async function connectToWhatsApp(forcedPhone = null) {
 
                     if (!shouldReply) continue;
 
-                    // Clean prompt text (remove @botPhone and @botLid from prompt)
+                    // Clean prompt text (remove @botPhone, @botLid, and @all/@everyone from prompt)
                     let promptText = rawText.trim();
                     if (botUser) {
                         const botPhoneDigits = botUser.id ? botUser.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
@@ -320,6 +336,7 @@ async function connectToWhatsApp(forcedPhone = null) {
                             promptText = promptText.replace(new RegExp(`@${botLidDigits}`, 'g'), '').trim();
                         }
                     }
+                    promptText = promptText.replace(/@(?:all|everyone|tagall|everybody|group|members)\b/gi, '').trim();
                     if (!promptText) promptText = rawText.trim();
 
                     // Sender identity
