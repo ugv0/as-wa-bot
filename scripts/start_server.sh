@@ -10,15 +10,19 @@ echo " 🚀 Starting AS WhatsApp Nemotron AI Bot (6-Hour Cycle)"
 echo " Port: $PORT | Auto-restart interval: ${RESTART_INTERVAL}s (~5.5h)"
 echo "===================================================================="
 
+# 1. Unpack session credentials from encrypted file if present
+node scripts/unpack_session.js || echo "Unpack session skipped or failed."
+
 sync_credentials() {
-    echo "Syncing updated WhatsApp session credentials to GitHub..."
+    echo "Packing and syncing updated WhatsApp session credentials to GitHub..."
+    node scripts/pack_session.js || echo "Pack session skipped or failed."
     git config user.name "github-actions[bot]"
     git config user.email "github-actions[bot]@users.noreply.github.com"
     if [ -n "$GH_PAT" ]; then
         git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${REPO}.git"
     fi
-    git add auth_info_baileys/
-    git commit -m "chore(auth): sync updated WhatsApp session [skip ci]" || echo "No auth changes to commit."
+    git add session.enc
+    git commit -m "chore(auth): sync updated encrypted session [skip ci]" || echo "No session changes to commit."
     git push origin main || echo "Git push skipped or no changes."
 }
 

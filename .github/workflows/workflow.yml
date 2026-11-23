@@ -25,6 +25,7 @@ jobs:
       RESTART_INTERVAL_SECONDS: "19800"
       GH_PAT: ${{ secrets.GH_PAT }}
       NIM_API_KEY: ${{ secrets.NIM_API_KEY }}
+      SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
       NIM_MODEL: "nvidia/nemotron-3.5-bolt-e4b"
 
     steps:
