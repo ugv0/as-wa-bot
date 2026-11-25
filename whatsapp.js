@@ -511,6 +511,33 @@ async function restartBot() {
     }, 1500);
 }
 
+async function disconnectAndReset() {
+    addLog('info', 'Account disconnect and reset requested from dashboard.');
+    if (sock) {
+        try {
+            sock.end(undefined);
+        } catch (e) {
+            // ignore
+        }
+    }
+    try {
+        if (fs.existsSync(AUTH_DIR)) {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        }
+    } catch (e) {
+        console.error('Error clearing auth directory:', e);
+    }
+    botState.user = null;
+    botState.pairingCode = null;
+    botState.pairingPhone = null;
+    botState.qrCodeDataUrl = null;
+    botState.qrRaw = null;
+    botState.status = 'initializing';
+    setTimeout(() => {
+        connectToWhatsApp();
+    }, 2000);
+}
+
 module.exports = {
     connectToWhatsApp,
     requestPairingCode,
@@ -518,5 +545,6 @@ module.exports = {
     getBotSettings,
     updateBotSettings,
     setAutoReply,
-    restartBot
+    restartBot,
+    disconnectAndReset
 };

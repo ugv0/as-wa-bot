@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const cors = require('cors');
-const { getBotState, getBotSettings, updateBotSettings, setAutoReply, restartBot, requestPairingCode } = require('./whatsapp');
+const { getBotState, getBotSettings, updateBotSettings, setAutoReply, restartBot, requestPairingCode, disconnectAndReset } = require('./whatsapp');
 
 function createServer(port = 3000) {
     const app = express();
@@ -60,6 +60,16 @@ function createServer(port = 3000) {
     app.post('/api/restart', async (req, res) => {
         await restartBot();
         res.json({ success: true, message: 'Restart triggered.' });
+    });
+
+    // Disconnect & Reset Auth (Allows pairing/QR reconnect from dashboard anytime)
+    app.post('/api/disconnect', async (req, res) => {
+        try {
+            await disconnectAndReset();
+            res.json({ success: true, message: 'Disconnected. Ready for pairing or QR scan.' });
+        } catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
     });
 
     return app;
